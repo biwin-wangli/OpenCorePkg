@@ -279,7 +279,6 @@
   _(UINT32                      , Timeout                     ,     , 0                                   , ())                   \
   _(BOOLEAN                     , PickerAudioAssist           ,     , FALSE                               , ())                   \
   _(BOOLEAN                     , HideAuxiliary               ,     , FALSE                               , ())                   \
-  _(BOOLEAN                     , HideSelf                    ,     , FALSE                               , ())                   \
   _(BOOLEAN                     , PollAppleHotKeys            ,     , FALSE                               , ())                   \
   _(BOOLEAN                     , ShowPicker                  ,     , FALSE                               , ())
   OC_DECLARE (OC_MISC_BOOT)

@@ -176,6 +176,8 @@ typedef struct OC_BOOT_ENTRY_ {
   // Load option data (usually "boot args").
   //
   VOID                      *LoadOptions;
+
+  LIST_ENTRY  Link;
 } OC_BOOT_ENTRY;
 
 /**
@@ -509,9 +511,9 @@ struct OC_PICKER_CONTEXT_ {
   //
   OC_IMAGE_START             StartImage;
   //
-  // Handle to exclude scanning from, optional.
+  // Handle to perform loader detection, optional.
   //
-  EFI_HANDLE                 ExcludeHandle;
+  EFI_HANDLE                 LoaderHandle;
   //
   // Entry display routine.
   //
@@ -1103,6 +1105,26 @@ VOID
 OcToggleVoiceOver (
   IN  OC_PICKER_CONTEXT  *Context,
   IN  UINT32             File  OPTIONAL
+  );
+
+/**
+  Obtain BootOrder entry list.
+
+  @param[in]   BootVariableGuid  GUID namespace for boot entries.
+  @param[in]   WithBootNext      Add BootNext as the first option if available.
+  @param[out]  BootOrderCount    Number of entries in boot order.
+  @param[out]  Deduplicated      Whether the list was changed during deduplication, optional.
+  @param[out]  HasBootNext       Whether the list starts with BootNext, optional
+
+  @retval  boot order entry list allocated from pool or NULL.
+**/
+UINT16 *
+OcGetBootOrder (
+  IN  EFI_GUID  *BootVariableGuid,
+  IN  BOOLEAN   WithBootNext,
+  OUT UINTN     *BootOrderCount,
+  OUT BOOLEAN   *Deduplicated  OPTIONAL,
+  OUT BOOLEAN   *HasBootNext   OPTIONAL
   );
 
 /**

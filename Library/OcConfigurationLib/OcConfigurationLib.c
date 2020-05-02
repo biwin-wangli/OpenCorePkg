@@ -328,7 +328,6 @@ mMiscConfigurationBootSchema[] = {
   OC_SCHEMA_INTEGER_IN ("ConsoleAttributes",   OC_GLOBAL_CONFIG, Misc.Boot.ConsoleAttributes),
   OC_SCHEMA_STRING_IN  ("HibernateMode",       OC_GLOBAL_CONFIG, Misc.Boot.HibernateMode),
   OC_SCHEMA_BOOLEAN_IN ("HideAuxiliary",       OC_GLOBAL_CONFIG, Misc.Boot.HideAuxiliary),
-  OC_SCHEMA_BOOLEAN_IN ("HideSelf",            OC_GLOBAL_CONFIG, Misc.Boot.HideSelf),
   OC_SCHEMA_INTEGER_IN ("PickerAttributes",    OC_GLOBAL_CONFIG, Misc.Boot.PickerAttributes),
   OC_SCHEMA_BOOLEAN_IN ("PickerAudioAssist",   OC_GLOBAL_CONFIG, Misc.Boot.PickerAudioAssist),
   OC_SCHEMA_STRING_IN  ("PickerMode",          OC_GLOBAL_CONFIG, Misc.Boot.PickerMode),

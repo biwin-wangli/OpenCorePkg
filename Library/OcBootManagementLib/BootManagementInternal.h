@@ -117,6 +117,38 @@ InternalFillValidBootEntries (
   IN     UINTN                        EntryIndex
   );
 
+VOID
+InternalDebugBootEnvironment (
+  IN CONST UINT16             *BootOrder,
+  IN EFI_GUID                 *BootGuid,
+  IN UINTN                    BootOrderCount
+  );
+
+/**
+  Retrieves booting relevant data from an UEFI Boot#### option.
+  If BootName is NULL, a BDS-style process is assumed and inactive as well as
+  non-Boot type applications are ignored.
+
+  @param[in]  BootOption        The boot option's index.
+  @param[out] BootName          On output, the boot option's description.
+  @param[out] OptionalDataSize  On output, the optional data size.
+  @param[out] OptionalData      On output, a pointer to the optional data.
+
+**/
+EFI_DEVICE_PATH_PROTOCOL *
+InternalGetBootOptionData (
+  IN  UINT16   BootOption,
+  IN  EFI_GUID *BootGuid,
+  OUT CHAR16   **BootName  OPTIONAL,
+  OUT UINT32   *OptionalDataSize  OPTIONAL,
+  OUT VOID     **OptionalData  OPTIONAL
+  );
+
+BOOLEAN
+InternalIsAppleLegacyLoadApp (
+  IN CONST EFI_DEVICE_PATH_PROTOCOL  *DevicePath
+  );
+
 /**
   Resets selected NVRAM variables and reboots the system.
 **/

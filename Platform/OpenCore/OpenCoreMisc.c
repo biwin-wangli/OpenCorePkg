@@ -445,7 +445,7 @@ EFI_STATUS
 OcMiscLateInit (
   IN  OC_GLOBAL_CONFIG          *Config,
   IN  EFI_DEVICE_PATH_PROTOCOL  *LoadPath  OPTIONAL,
-  OUT EFI_HANDLE                *LoadHandle OPTIONAL
+  OUT EFI_HANDLE                *LoadHandle
   )
 {
   EFI_STATUS   Status;
@@ -477,16 +477,7 @@ OcMiscLateInit (
     OcRegisterBootOption (L"OpenCore", OcHandle, OPEN_CORE_BOOTSTRAP_PATH);
   }
 
-  //
-  // Do not disclose self entry unless asked.
-  //
-  if (LoadHandle != NULL) {
-    if (Config->Misc.Boot.HideSelf) {
-      *LoadHandle = OcHandle;
-    } else {
-      *LoadHandle = NULL;
-    }
-  }
+  *LoadHandle = OcHandle;
 
   HibernateMode = OC_BLOB_GET (&Config->Misc.Boot.HibernateMode);
 
@@ -520,7 +511,7 @@ OcMiscBoot (
   IN  OC_PRIVILEGE_CONTEXT      *Privilege OPTIONAL,
   IN  OC_IMAGE_START            StartImage,
   IN  BOOLEAN                   CustomBootGuid,
-  IN  EFI_HANDLE                LoadHandle OPTIONAL
+  IN  EFI_HANDLE                LoadHandle
   )
 {
   EFI_STATUS             Status;
@@ -641,7 +632,7 @@ OcMiscBoot (
   Context->TakeoffDelay       = Config->Misc.Boot.TakeoffDelay;
   Context->StartImage         = StartImage;
   Context->CustomBootGuid     = CustomBootGuid;
-  Context->ExcludeHandle      = LoadHandle;
+  Context->LoaderHandle       = LoadHandle;
   Context->CustomEntryContext = Storage;
   Context->CustomRead         = OcToolLoadEntry;
   Context->CustomDescribe     = OcToolDescribeEntry;

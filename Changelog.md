@@ -24,6 +24,7 @@ OpenCore Changelog
 - Added `Ps2KeyboardDxe` driver for DuetPkg
 - Updated `BootInstall` DuetPkg version (now opensource)
 - Added partial HiDPI support in OpenCanopy
+- Removed `HideSelf` support in favour of automatic detection
 
 #### v0.5.7
 - Added TimeMachine detection to picker

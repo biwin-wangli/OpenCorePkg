@@ -14,6 +14,10 @@
 
 #include "BootManagementInternal.h"
 
+#include <Guid/AppleVariable.h>
+#include <Guid/GlobalVariable.h>
+#include <Guid/OcVariables.h>
+
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/OcDebugLogLib.h>
@@ -24,6 +28,8 @@
 #include <Library/OcFileLib.h>
 #include <Library/OcStringLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiLib.h>
+#include <Library/UefiRuntimeServicesTableLib.h>
 #include <Library/PrintLib.h>
 
 EFI_STATUS
@@ -320,6 +326,385 @@ OcFreeBootEntries (
   }
 
   FreePool (BootEntries);
+}
+
+typedef struct OC_BOOT_FILESYSTEM_ {
+  LIST_ENTRY  Link;
+  EFI_HANDLE  Handle;
+  LIST_ENTRY  BootEntries;
+  BOOLEAN     External;
+  BOOLEAN     LoaderFs;
+} OC_BOOT_FILESYSTEM;
+
+typedef struct OC_BOOT_CONTEXT_ {
+  UINTN          BootOptionCount;
+  UINTN          FileSystemCount;
+  LIST_ENTRY     FileSystems;
+  EFI_GUID       *BootVariableGuid;
+  OC_BOOT_ENTRY  *DefaultEntry;
+} OC_BOOT_CONTEXT;
+
+STATIC
+EFI_STATUS
+AddBootEntryFromBootOption (
+  IN OUT OC_BOOT_CONTEXT     *BootContext,
+  IN     UINT16              BootOption,
+  OUT    OC_BOOT_ENTRY       **BootEntry  OPTIONAL
+  )
+{
+  EFI_STATUS                 Status;
+  EFI_DEVICE_PATH_PROTOCOL   *DevicePath;
+  EFI_DEVICE_PATH_PROTOCOL   *RemainingDevicePath;
+  EFI_DEVICE_PATH_PROTOCOL   *PrevDevicePath;
+  EFI_DEVICE_PATH_PROTOCOL   *FullDevicePath;
+  UINTN                      DevicePathSize;
+  CHAR16                     *BootName;
+  EFI_HANDLE                 DeviceHandle;
+  INTN                       NumPatchedNodes;
+  BOOLEAN                    IsAppleLegacy;
+
+  //
+  // Obtain original device path.
+  //
+  DevicePath = InternalGetBootOptionData (
+    BootOption,
+    BootContext->BootVariableGuid,
+    &BootName,
+    NULL,
+    NULL
+    );
+  if (DevicePath == NULL) {
+    return EFI_NOT_FOUND;
+  }
+
+  //
+  // Get BootCamp device path stored in special variable.
+  // BootCamp device path will point to disk instead of partition.
+  //
+  IsAppleLegacy = InternalIsAppleLegacyLoadApp (DevicePath);
+  if (IsAppleLegacy) {
+    FreePool (DevicePath);
+    Status = GetVariable2 (
+      APPLE_BOOT_CAMP_HD_VARIABLE_NAME,
+      &gAppleBootVariableGuid,
+      (VOID **) &DevicePath,
+      &DevicePathSize
+      );
+    if (EFI_ERROR (Status) || !IsDevicePathValid (DevicePath, DevicePathSize)) {
+      return EFI_NOT_FOUND;
+    }
+  }
+
+  //
+  // Fixup device path if necessary.
+  //
+  RemainingDevicePath = DevicePath;
+  NumPatchedNodes = OcFixAppleBootDevicePath (&RemainingDevicePath);
+  if (NumPatchedNodes == -1) {
+    FreePool (DevicePath);
+    return EFI_NOT_FOUND;
+  }
+
+  //
+  // Expand BootCamp device path to EFI partition device path.
+  //
+  if (IsAppleLegacy) {
+    RemainingDevicePath = DevicePath;
+    DevicePath = OcDiskFindSystemPartitionPath (
+      DevicePath,
+      &DevicePathSize
+      );
+
+    FreePool (RemainingDevicePath);
+
+    if (DevicePath == NULL) {
+      return EFI_NOT_FOUND;
+    }
+
+    //
+    // The Device Path must be entirely locatable as
+    // OcDiskFindSystemPartitionPath() guarantees to only return valid paths.
+    //
+    ASSERT (DevicePathSize > END_DEVICE_PATH_LENGTH);
+    DevicePathSize -= END_DEVICE_PATH_LENGTH;
+    RemainingDevicePath = (EFI_DEVICE_PATH_PROTOCOL *) ((UINTN) DevicePath + DevicePathSize);
+  }
+
+  //
+  // If the Device Path was not advanced (by OcFixAppleBootDevicePath) it can be a short-form.
+  // Perform short to full form expansion.
+  // TODO: Continue.
+  //
+  if (DevicePath == RemainingDevicePath) {
+    PrevDevicePath = NULL;
+    do {
+      FullDevicePath = OcGetNextLoadOptionDevicePath (
+                         DevicePath,
+                         PrevDevicePath
+                         );
+
+      if (PrevDevicePath != NULL) {
+        FreePool (PrevDevicePath);
+      }
+
+      if (FullDevicePath == NULL) {
+        DEBUG ((DEBUG_INFO, "OCB: Short-form DP could not be expanded\n"));
+        BootEntry = NULL;
+        break;
+      }
+
+      PrevDevicePath = FullDevicePath;
+
+      RemainingDevicePath = FullDevicePath;
+      Status = gBS->LocateDevicePath (
+        &gEfiDevicePathProtocolGuid,
+        &RemainingDevicePath,
+        &DeviceHandle
+        );
+      if (EFI_ERROR (Status)) {
+        BootEntry = NULL;
+        continue;
+      }
+
+      DebugPrintDevicePath (
+        DEBUG_INFO,
+        "OCB: Expanded DP remainder",
+        UefiRemainingDevicePath
+        );
+
+      BootEntry = InternalGetBootEntryByDevicePath (
+                    BootEntries,
+                    NumBootEntries,
+                    FullDevicePath,
+                    UefiRemainingDevicePath,
+                    IsBootNext
+                    );
+    } while (BootEntry == NULL);
+  }
+
+  RemainingDevicePath = DevicePath;
+  Status = gBS->LocateDevicePath (
+    &gEfiSimpleFileSystemProtocolGuid,
+    &RemainingDevicePath,
+    &DeviceHandle
+    );
+
+
+}
+
+STATIC
+VOID
+FreeBootEntry (
+  IN OC_BOOT_ENTRY        *BootEntry
+  )
+{
+  // TODO: Implement
+}
+
+/**
+  Allocate a new file system entry in boot entries
+  in case it can be used according to current ScanPolicy.
+**/
+STATIC
+EFI_STATUS
+AddFileSystemEntry (
+  IN OUT OC_BOOT_CONTEXT     *BootContext,
+  IN     EFI_HANDLE          FileSystemHandle,
+  IN     UINT32              ScanPolicy,
+  IN     EFI_HANDLE          LoaderHandle,
+     OUT OC_BOOT_FILESYSTEM  **FileSystemEntry  OPTIONAL
+  )
+{
+  EFI_STATUS          Status;
+  BOOLEAN             IsExternal;
+  OC_BOOT_FILESYSTEM  *Entry;
+
+  Status = InternalCheckScanPolicy (
+    FileSystemHandle,
+    ScanPolicy,
+    &IsExternal
+    );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Entry = AllocatePool (sizeof (*Entry));
+  if (Entry == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  Entry->Handle = FileSystemHandle;
+  InitializeListHead (&Entry->BootEntries);
+  Entry->External = IsExternal;
+  Entry->LoaderFs = LoaderHandle == FileSystemHandle;
+  InsertTailList (&BootContext->FileSystems, &Entry->Link);
+  ++BootContext->FileSystemCount;
+
+  if (FileSystemEntry != NULL) {
+    *FileSystemEntry = Entry;
+  }
+
+  return EFI_SUCCESS;
+}
+
+STATIC
+VOID
+FreeFileSystemEntry (
+  IN OUT OC_BOOT_CONTEXT     *BootContext,
+  IN     OC_BOOT_FILESYSTEM  *FileSystemEntry
+  )
+{
+  LIST_ENTRY     *Link;
+  OC_BOOT_ENTRY  *BootEntry;
+
+  RemoveEntryList (&FileSystemEntry->Link);
+  --BootContext->FileSystemCount;
+
+  while (!IsListEmpty (&FileSystemEntry->BootEntries)) {
+    Link = GetFirstNode (&FileSystemEntry->BootEntries);
+    BootEntry = BASE_CR (Link, OC_BOOT_ENTRY, Link);
+    RemoveEntryList (Link);
+    FreeBootEntry (BootEntry);
+  }
+
+  FreePool (FileSystemEntry);
+}
+
+STATIC
+OC_BOOT_CONTEXT *
+BuildFileSystemList (
+  IN UINT32      ScanPolicy,
+  IN EFI_HANDLE  LoaderHandle,
+  IN EFI_GUID    *BootVariableGuid,
+  IN BOOLEAN     Empty
+  )
+{
+  OC_BOOT_CONTEXT  *Context;
+  EFI_STATUS       Status;
+  UINTN            NoHandles;
+  EFI_HANDLE       *Handles;
+  UINTN            Index;
+
+  Context = AllocatePool (sizeof (*Context));
+  if (Context == NULL) {
+    return NULL;
+  }
+
+  Context->BootOptionCount  = 0;
+  Context->FileSystemCount  = 0;
+  InitializeListHead (&Context->FileSystems);
+  Context->BootVariableGuid = BootVariableGuid;
+  Context->DefaultEntry     = NULL;
+
+  if (Empty) {
+    return Context;
+  }
+
+  Status = gBS->LocateHandleBuffer (
+    ByProtocol,
+    &gEfiSimpleFileSystemProtocolGuid,
+    NULL,
+    &NoHandles,
+    &Handles
+    );
+  if (EFI_ERROR (Status)) {
+    return Context;
+  }
+
+  for (Index = 0; Index < NoHandles; ++Index) {
+    AddFileSystemEntry (
+      Context,
+      Handles[Index],
+      ScanPolicy,
+      LoaderHandle,
+      NULL
+      );
+  }
+
+  FreePool (Handles);
+  return Context;
+}
+
+STATIC
+VOID
+FreeFileSystemList (
+  IN OUT OC_BOOT_CONTEXT  *Context
+  )
+{
+  LIST_ENTRY          *Link;
+  OC_BOOT_FILESYSTEM  *FileSystem;
+
+  while (!IsListEmpty (&Context->FileSystems)) {
+    Link = GetFirstNode (&Context->FileSystems);
+    FileSystem = BASE_CR (Link, OC_BOOT_FILESYSTEM, Link);
+    FreeFileSystemEntry (Context, FileSystem);
+  }
+
+  FreePool (Context);
+}
+
+
+EFI_STATUS
+HandleNew (
+  IN  APPLE_BOOT_POLICY_PROTOCOL  *BootPolicy,
+  IN  OC_PICKER_CONTEXT           *Context
+  )
+{
+  EFI_STATUS                       Status;
+  OC_BOOT_CONTEXT                  *BootContext;
+  EFI_GUID                         *BootVariableGuid;
+  UINT16                           *BootOrder;
+  UINTN                            BootOrderCount;
+  UINTN                            Index;
+  BOOLEAN                          HasBootNext;
+
+  BootContext = BuildFileSystemList (
+    Context->ScanPolicy,
+    Context->LoaderHandle,
+    Context->CustomBootGuid
+      ? &gOcVendorVariableGuid : &gEfiGlobalVariableGuid,
+    FALSE
+    );
+  if (BootContext == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  DEBUG ((DEBUG_INFO, "OCB: Found %u potentially bootable filesystems\n", (UINT32) BootContext->FileSystemCount));
+
+  BootOrder = OcGetBootOrder (
+    BootContext->BootVariableGuid,
+    TRUE,
+    &BootOrderCount,
+    NULL,
+    &HasBootNext
+    );
+  if (BootOrder != NULL) {
+    DEBUG_CODE_BEGIN ();
+    DEBUG ((
+      DEBUG_INFO,
+      "OCB: Found %u BootOrder entries with BootNext %a\n",
+      (UINT32) BootOrderCount,
+      HasBootNext ? "included" : "excluded"
+      ));
+    InternalDebugBootEnvironment (BootOrder, BootContext->BootVariableGuid, BootOrderCount);
+    DEBUG_CODE_END ();
+
+    if (HasBootNext) {
+      gRT->SetVariable (
+        EFI_BOOT_NEXT_VARIABLE_NAME,
+        BootVariableGuid,
+        EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS | EFI_VARIABLE_NON_VOLATILE,
+        0,
+        NULL
+        );
+    }
+
+    for (Index = 0; Index < BootOrderCount; ++Index) {
+      AddBootEntryFromBootOption (BootContext, BootOrder[Index], NULL);
+    }
+
+    FreePool (BootOrder);
+  }
 }
 
 EFI_STATUS

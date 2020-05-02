@@ -36,18 +36,6 @@
 #include <Library/UefiLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-/**
-  Retrieves booting relevant data from an UEFI Boot#### option.
-  If BootName is NULL, a BDS-style process is assumed and inactive as well as
-  non-Boot type applications are ignored.
-
-  @param[in]  BootOption        The boot option's index.
-  @param[out] BootName          On output, the boot option's description.
-  @param[out] OptionalDataSize  On output, the optional data size.
-  @param[out] OptionalData      On output, a pointer to the optional data.
-
-**/
-STATIC
 EFI_DEVICE_PATH_PROTOCOL *
 InternalGetBootOptionData (
   IN  UINT16   BootOption,
@@ -159,7 +147,6 @@ InternalGetBootOptionData (
   return FilePathList;
 }
 
-STATIC
 VOID
 InternalDebugBootEnvironment (
   IN CONST UINT16             *BootOrder,
@@ -328,7 +315,6 @@ InternalGetBootEntryByDevicePath (
   return NULL;
 }
 
-STATIC
 BOOLEAN
 InternalIsAppleLegacyLoadApp (
   IN CONST EFI_DEVICE_PATH_PROTOCOL  *DevicePath
@@ -353,38 +339,130 @@ InternalIsAppleLegacyLoadApp (
   return FALSE;
 }
 
-STATIC
 UINT16 *
-InternalGetBootOrder (
+OcGetBootOrder (
   IN  EFI_GUID  *BootVariableGuid,
-  OUT UINTN     *BootOrderCount
+  IN  BOOLEAN   WithBootNext,
+  OUT UINTN     *BootOrderCount,
+  OUT BOOLEAN   *Deduplicated  OPTIONAL,
+  OUT BOOLEAN   *HasBootNext   OPTIONAL
   )
 {
   EFI_STATUS  Status;
+  UINT32      VariableAttributes;
+  UINT16      BootNext;
   UINT16      *BootOrder;
-  UINTN       BootOrderSize;
+  UINTN       VariableSize;
+  UINTN       Index;
+  UINTN       Index2;
+  BOOLEAN     BootOrderChanged;
 
-  Status = GetVariable2 (
+  *BootOrderCount = 0;
+
+  if (Deduplicated != NULL) {
+    *Deduplicated = FALSE;
+  }
+
+  if (HasBootNext != NULL) {
+    *HasBootNext = FALSE;
+  }
+
+  //
+  // Precede variable with boot next.
+  //
+  if (WithBootNext) {
+    VariableSize = sizeof (BootNext);
+    Status = gRT->GetVariable (
+      EFI_BOOT_NEXT_VARIABLE_NAME,
+      BootVariableGuid,
+      &VariableAttributes,
+      &VariableSize,
+      &BootNext
+      );
+    if (!EFI_ERROR (Status) && VariableSize == sizeof (BootNext)) {
+      if (HasBootNext != NULL) {
+        *HasBootNext = TRUE;
+      }
+    } else {
+      WithBootNext = FALSE;
+    }
+  }
+
+  VariableSize = 0;
+  Status = gRT->GetVariable (
     EFI_BOOT_ORDER_VARIABLE_NAME,
     BootVariableGuid,
-    (VOID **) &BootOrder,
-    &BootOrderSize
+    &VariableAttributes,
+    &VariableSize,
+    NULL
     );
 
+  if (Status == EFI_BUFFER_TOO_SMALL) {
+    BootOrder = AllocatePool (WithBootNext * sizeof (BootNext) + VariableSize);
+    if (BootOrder == NULL) {
+      return NULL;
+    }
+
+    Status = gRT->GetVariable (
+      EFI_BOOT_ORDER_VARIABLE_NAME,
+      BootVariableGuid,
+      &VariableAttributes,
+      &VariableSize,
+      BootOrder + WithBootNext
+      );
+    if (EFI_ERROR (Status)
+      || VariableSize < sizeof (*BootOrder)
+      || VariableSize % sizeof (*BootOrder) != 0) {
+      FreePool (BootOrder);
+      Status = EFI_UNSUPPORTED;
+    }
+  } else if (!EFI_ERROR (Status)) {
+    Status = EFI_NOT_FOUND;
+  }
+
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_INFO, "OCB: BootOrder is unavailable - %r\n", Status));
-    *BootOrderCount = 0;
+    if (WithBootNext) {
+      BootOrder = AllocateCopyPool (sizeof (BootNext), &BootNext);
+      if (BootOrder != NULL) {
+        *BootOrderCount = 1;
+        return BootOrder;
+      }
+    }
+
     return NULL;
   }
 
-  if (BootOrderSize < sizeof (*BootOrder) || BootOrderSize % sizeof (*BootOrder) != 0) {
-    DEBUG ((DEBUG_WARN, "OCB: BootOrder is malformed - %x\n", (UINT32) BootOrderSize));
-    FreePool (BootOrder);
-    *BootOrderCount = 0;
-    return NULL;
+  if (WithBootNext) {
+    BootOrder[0] = BootNext;
+    VariableSize += sizeof (*BootOrder);
   }
 
-  *BootOrderCount = BootOrderSize / sizeof (*BootOrder);
+  BootOrderChanged = FALSE;
+
+  for (Index = 1; Index < VariableSize / sizeof (BootOrder[0]); ++Index) {
+    for (Index2 = 0; Index2 < Index; ++Index2) {
+      if (BootOrder[Index] == BootOrder[Index2]) {
+        //
+        // Found duplicate.
+        //
+        BootOrderChanged = TRUE;
+        CopyMem (
+          &BootOrder[Index],
+          &BootOrder[Index + 1],
+          VariableSize - sizeof (BootOrder[0]) * (Index + 1)
+          );
+        VariableSize -= sizeof (BootOrder[0]);
+        --Index;
+        break;
+      }
+    }
+  }
+
+  *BootOrderCount = VariableSize / sizeof (*BootOrder);
+  if (Deduplicated != NULL) {
+    *Deduplicated = BootOrderChanged;
+  }
+
   return BootOrder;
 }
 
@@ -458,9 +536,11 @@ InternalGetDefaultBootEntry (
   if (Status == EFI_NOT_FOUND) {
     DEBUG ((DEBUG_INFO, "OCB: BootNext has not been found\n"));
 
-    BootOrder = InternalGetBootOrder (
+    BootOrder = OcGetBootOrder (
       BootVariableGuid,
-      &BootOrderCount
+      FALSE,
+      &BootOrderCount,
+      NULL
       );
 
     if (BootOrder == NULL) {
@@ -838,9 +918,11 @@ OcSetDefaultBootEntry (
     BootVariableGuid = &gEfiGlobalVariableGuid;
   }
 
-  BootOrder = InternalGetBootOrder (
+  BootOrder = OcGetBootOrder (
     BootVariableGuid,
-    &BootOrderCount
+    FALSE,
+    &BootOrderCount,
+    NULL
     );
 
   MatchedEntry    = NULL;
@@ -997,6 +1079,16 @@ OcSetDefaultBootEntry (
   }
 
   return Status;
+}
+
+EFI_STATUS
+OcRegisterBootOption (
+  IN CONST CHAR16    *OptionName,
+  IN EFI_HANDLE      DeviceHandle,
+  IN CONST CHAR16    *FilePath
+  )
+{
+
 }
 
 STATIC
